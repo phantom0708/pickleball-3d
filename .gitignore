@@ -1,0 +1,8 @@
+node_modules/
+.env
+server/data/
+docker-compose.override.yml
+.DS_Store
+# script deploy riêng của từng người
+deploy/*.local.sh
+*.log

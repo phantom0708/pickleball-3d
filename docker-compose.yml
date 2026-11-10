@@ -1,0 +1,35 @@
+# Pickle Pop – chạy trên Ubuntu với Cloudflare Tunnel
+# Cổng 8080 KHÔNG được mở ra ngoài: cloudflared kết nối tới app qua mạng nội bộ của Docker.
+services:
+  app:
+    build: .
+    image: pickle-pop:latest
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      PORT: "8080"
+      HOST: 0.0.0.0
+      TRUST_PROXY: cloudflare
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:?Hãy đặt ALLOWED_ORIGINS trong file .env}
+    volumes:
+      - pp-data:/app/server/data
+    stop_grace_period: 10s
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+
+  cloudflared:
+    # nên cập nhật lên bản mới nhất: https://hub.docker.com/r/cloudflare/cloudflared/tags
+    image: cloudflare/cloudflared:2024.6.1
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run
+    environment:
+      TUNNEL_TOKEN: ${TUNNEL_TOKEN:?Hãy đặt TUNNEL_TOKEN trong file .env}
+    depends_on:
+      - app
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+
+volumes:
+  pp-data:

@@ -1,0 +1,8 @@
+# Chỉ dùng để thử trên máy: cp docker-compose.override.example.yml docker-compose.override.yml
+# Mở game tại http://localhost:8080 (chỉ nghe trên 127.0.0.1)
+services:
+  app:
+    ports:
+      - "127.0.0.1:8080:8080"
+    environment:
+      ALLOWED_ORIGINS: http://localhost:8080

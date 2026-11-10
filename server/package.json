@@ -1,0 +1,16 @@
+{
+  "name": "pickle-pop-server",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Pickle Pop – server game pickleball online (HTTP + WebSocket)",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "LAG_MS=100 JITTER_MS=30 node index.js",
+    "test": "node --test test/"
+  },
+  "engines": { "node": ">=20" },
+  "dependencies": {
+    "ws": "^8.18.0"
+  }
+}

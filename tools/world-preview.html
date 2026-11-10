@@ -1,0 +1,183 @@
+<!doctype html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pickle Pop – World preview</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #111; overflow: hidden; font-family: system-ui, sans-serif; }
+  canvas { display: block; width: 100vw; height: 100vh; }
+  #hud { position: fixed; left: 10px; top: 10px; color: #fff; font-size: 12px; background: rgba(0,0,0,.45); padding: 6px 9px; border-radius: 8px; line-height: 1.5; }
+  #hud a { color: #ffd35c; margin-right: 6px; }
+  #hud.hide { display: none; }
+  body.thumbs { overflow: auto; background: #1b1d2a; }
+  body.thumbs canvas { position: fixed; left: 0; top: 0; width: 64px; height: 36px; opacity: 0.0; pointer-events: none; }
+  #grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 14px; padding: 14px; }
+  #grid figure { margin: 0; background: #262a3c; border-radius: 12px; overflow: hidden; color: #fff; }
+  #grid img { display: block; width: 100%; aspect-ratio: 16 / 9; }
+  #grid figcaption { padding: 7px 10px; font-size: 13px; }
+  #grid figcaption b { color: #ffd35c; }
+</style>
+<script src="https://cdn.jsdelivr.net/npm/three@0.147.0/build/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.147.0/examples/js/environments/RoomEnvironment.js"></script>
+<script src="../shared/config.js"></script>
+<script src="../js/world.js"></script>
+<script src="../js/audio.js"></script>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="hud"></div>
+<script>
+(function () {
+  'use strict';
+  const qs = new URLSearchParams(location.search);
+  if (qs.get('thumbs')) { thumbsMode(); return; }
+  const venue = qs.get('venue') || 'gym';
+  const quality = qs.get('quality') || 'high';
+  const fixedDt = qs.get('fixed') ? 1 / 60 : 0;      // bước cố định (headless)
+  const camMode = qs.get('cam') || 'game';            // game | orbit | side
+  const C = PP.C, W = PP.World;
+  const canvas = document.getElementById('c');
+  const renderer = W.createRenderer(canvas, quality);
+  const world = W.buildScene(renderer, venue, quality);
+  const scene = world.scene;
+  const camera = new THREE.PerspectiveCamera(42, 16 / 9, 0.1, 500);
+
+  const ball = new W.Ball(); scene.add(ball.root);
+  const ring = new W.TimingRing(scene);
+  const land = new W.LandingMarker(scene);
+  const box = new W.BoxHint(scene);
+  const bursts = new W.Bursts(scene);
+  const fx = new W.Particles(scene);
+  const surface = W.surfaceOf(venue);
+
+  // hai "người chơi" giả (cột màu) để thấy tỉ lệ
+  const dummy = (col) => { const g = new THREE.Group(); const m = new THREE.Mesh(new THREE.CapsuleGeometry(0.22, 0.7, 4, 12), new THREE.MeshStandardMaterial({ color: new THREE.Color(col).convertSRGBToLinear(), roughness: 0.6 })); m.position.y = 0.57; m.castShadow = true; g.add(m); scene.add(g); return g; };
+  const pA = dummy(0xff8fb1), pB = dummy(0x8fd0ff);
+
+  function resize() {
+    const w = window.innerWidth, h = window.innerHeight;
+    renderer.setSize(w, h, false); camera.aspect = w / h; camera.updateProjectionMatrix();
+  }
+  window.addEventListener('resize', resize); resize();
+
+  // ---- bóng mô phỏng: parabol giữa hai vạch cuối ----
+  const SH = PP.SHOTS || {};
+  const kinds = ['serve', 'drive', 'lob', 'dink', 'smash', 'drop', 'drive'];
+  const colorOf = (k) => k === 'serve' ? (PP.SERVE_COLOR || '#ffffff') : ((SH[k] && SH[k].color) || { drive: '#9cc9ff', dink: '#8fe3c0', drop: '#7fdcc4', lob: '#ffd35c', smash: '#ff5d8f' }[k]);
+  let shot = null, shotIdx = 0, side = 1, t = 0;
+  function newShot() {
+    const kind = kinds[shotIdx++ % kinds.length];
+    const from = { x: (Math.random() - 0.5) * 3.4, y: kind === 'serve' ? 0.55 : 0.9, z: side * (C.L - 0.4) };
+    const depth = kind === 'dink' || kind === 'drop' ? 1.4 + Math.random() * 0.6 : 4.4 + Math.random() * 1.8;
+    const to = { x: (Math.random() - 0.5) * 4.2, z: -side * depth };
+    const T = { serve: 1.25, drive: 0.8, lob: 1.9, dink: 1.25, smash: 0.55, drop: 1.6 }[kind];
+    const g = 9.8;
+    shot = { kind, from, to, T, t0: t, vx: (to.x - from.x) / T, vz: (to.z - from.z) / T, vy: (0 - from.y + 0.5 * g * T * T) / T, g, bounced: false };
+    ball.clearTrail(); ball.setTrailColor(colorOf(kind), kind === 'smash' ? 1.6 : 1);
+    land.setColor(colorOf(kind));
+    W.Audio && 0;
+    bursts.spawn(from.x, from.y + 0.2, from.z, kind === 'smash' ? 0xff5d8f : 0xffffff, kind === 'smash' ? 1.4 : 0.9);
+    if (shotIdx % 3 === 0) { bursts.spawn(from.x, from.y + 0.2, from.z, 0xffc93c, 1.8, 0.45); fx.burst(from.x, from.y + 0.2, from.z, { count: 18 }); ring.flash(); }
+    try { PP.Audio.hit(kind, shotIdx % 3 === 0 ? 'perfect' : 'good'); } catch (e) { console.error(e); }
+    side = -side;
+  }
+  newShot();
+  let lastCheer = 0, lastWave = 0, lastNet = 0;
+  const pos = { x: 0, y: 1, z: 0 }, vel = { x: 0, y: 0, z: 0 };
+  let frames = 0, fpsT0 = performance.now(), fps = 0, last = performance.now();
+  const hud = document.getElementById('hud');
+  if (qs.get('hud') === '0') hud.classList.add('hide');
+  hud.innerHTML = '<a href="?thumbs=1&quality=' + quality + '">thumbs</a>' + W.VENUE_IDS.map((v) => '<a href="?venue=' + v + '&quality=' + quality + '">' + v + '</a>').join('') + '<br>' + ['low', 'medium', 'high'].map((q) => '<a href="?venue=' + venue + '&quality=' + q + '">' + q + '</a>').join('') + '<span id="st"></span>';
+  const st = document.getElementById('st');
+
+  function setCamera(time) {
+    if (camMode === 'orbit') { const a = time * 0.15; camera.position.set(Math.sin(a) * 17, 7.5, Math.cos(a) * 17); camera.lookAt(0, 0.5, 0); return; }
+    if (camMode === 'side') { camera.position.set(14, 5, 2); camera.lookAt(0, 0.6, -2); return; }
+    if (camMode === 'portrait') { camera.fov = 58; camera.updateProjectionMatrix(); camera.position.set(0, 8.4, 12.6 + 1); camera.lookAt(0, 0, -2.2); return; }
+    camera.position.set(pA.position.x * 0.4, 6.2, 13.6);
+    camera.lookAt(pA.position.x * 0.25, 0.2, -3.4);
+  }
+
+  function step(dt) {
+    t += dt;
+    const s = shot, tt = t - s.t0;
+    // quỹ đạo: bay T giây -> nảy (hệ số 0.55) -> tới lượt đánh của bên kia
+    let ph = tt;
+    if (ph <= s.T) {
+      pos.x = s.from.x + s.vx * ph; pos.z = s.from.z + s.vz * ph; pos.y = Math.max(C.R, s.from.y + s.vy * ph - 0.5 * s.g * ph * ph);
+      vel.x = s.vx; vel.z = s.vz; vel.y = s.vy - s.g * ph;
+    } else {
+      if (!s.bounced) {
+        s.bounced = true; fx.dust(s.to.x, s.to.z, surface);
+        try { PP.Audio.bounce(surface); } catch (e) { console.error(e); }
+      }
+      const b = ph - s.T, vy0 = (s.g * s.T - s.vy) * 0.55 + 1.2;
+      pos.x = s.to.x + s.vx * 0.7 * b; pos.z = s.to.z + s.vz * 0.7 * b; pos.y = Math.max(C.R, vy0 * b - 0.5 * s.g * b * b);
+      vel.x = s.vx * 0.7; vel.z = s.vz * 0.7; vel.y = vy0 - s.g * b;
+      if (b > Math.min(0.55, vy0 / s.g * 1.1)) newShot();
+    }
+    const incoming = shot.vz > 0; // đang bay về phía người chơi A (gần camera)
+    const tgt = incoming ? { x: shot.to.x + shot.vx * 0.3, z: Math.min(C.L + 0.3, shot.to.z + shot.vz * 0.3 + 0.6) } : { x: 0, z: C.L - 0.6 };
+    pA.position.x += (tgt.x - pA.position.x) * (1 - Math.exp(-dt * 4)); pA.position.z += (tgt.z - pA.position.z) * (1 - Math.exp(-dt * 4));
+    const tgtB = !incoming ? { x: shot.to.x, z: Math.max(-C.L - 0.3, shot.to.z - 0.8) } : { x: 0, z: -C.L + 0.6 };
+    pB.position.x += (tgtB.x - pB.position.x) * (1 - Math.exp(-dt * 4)); pB.position.z += (tgtB.z - pB.position.z) * (1 - Math.exp(-dt * 4));
+
+    ball.update(dt, pos, vel, 'flight', camera, shot.kind === 'dink' || shot.kind === 'drop' ? -20 : 30);
+    const tLeft = shot.T + 0.35 - (t - shot.t0);
+    ring.update(pA.position.x, pA.position.z, incoming && tLeft < 1.2 ? Math.min(1, Math.max(0, tLeft / 0.6)) : null, dt);
+    land.update(t - shot.t0 < shot.T ? { x: shot.to.x, z: shot.to.z } : null, t);
+    box.update(shot.kind === 'serve' || (shotIdx % kinds.length) === 0 ? { x0: 0, x1: C.W, z0: -C.L, z1: -C.K } : null, t);
+    bursts.update(dt, camera);
+    fx.update(dt);
+    if (t - lastCheer > 5) { lastCheer = t; world.crowd.cheer(0.9); try { PP.Audio.cheer(0.8); } catch (e) { console.error(e); } }
+    if (t - lastWave > 9) { lastWave = t; world.crowd.wave(); }
+    if (t - lastNet > 4) { lastNet = t; world.net.shake((Math.random() - 0.5) * 4, 1); }
+    world.update(dt, t);
+  }
+
+  const freezeAt = qs.get('freeze') ? +qs.get('freeze') : 0;   // dựng sẵn tới thời điểm t rồi dừng mô phỏng (chụp ảnh tất định)
+  if (freezeAt) { Math.random = (function () { let s = 7; return function () { s = (s * 16807) % 2147483647; return (s - 1) / 2147483646; }; })(); while (t < freezeAt) { setCamera(t); step(1 / 60); } }
+  function frame(now) {
+    const dt = fixedDt || Math.max(0, Math.min(0.05, (now - last) / 1000)); last = now;
+    if (!freezeAt) step(dt);
+    setCamera(t);
+    renderer.render(scene, camera);
+    frames++;
+    if (now - fpsT0 > 1000) { fps = frames * 1000 / (now - fpsT0); frames = 0; fpsT0 = now; }
+    const info = renderer.info.render;
+    window.__stats = { fps, calls: info.calls, triangles: info.triangles, points: info.points, lines: info.lines, t, geometries: renderer.info.memory.geometries, textures: renderer.info.memory.textures, programs: renderer.info.programs ? renderer.info.programs.length : 0 };
+    if (st && frames % 10 === 0) st.textContent = ' · ' + venue + '/' + quality + ' · ' + fps.toFixed(0) + ' fps · ' + info.calls + ' calls · ' + (info.triangles / 1000).toFixed(1) + 'k tris';
+    requestAnimationFrame(frame);
+  }
+  window.__world = world; window.__renderer = renderer; window.__camera = camera;
+  requestAnimationFrame(frame);
+
+  // ?thumbs=1 : lưới ảnh xem trước của cả 10 sân (PP.World.thumbnails)
+  function thumbsMode() {
+    document.body.classList.add('thumbs');
+    const quality = qs.get('quality') || 'high';
+    const canvas = document.getElementById('c');
+    const renderer = PP.World.createRenderer(canvas, quality);
+    renderer.setSize(64, 36, false);
+    const grid = document.createElement('div'); grid.id = 'grid'; document.body.appendChild(grid);
+    const ids = (PP.VENUES || []).map((v) => v.id);
+    const t0 = performance.now();
+    const before = { pr: renderer.getPixelRatio(), exp: renderer.toneMappingExposure, size: renderer.getSize(new THREE.Vector2()).toArray(), rt: renderer.getRenderTarget() };
+    PP.World.thumbnails(renderer, ids, 320, 180).then((map) => {
+      const ms = performance.now() - t0;
+      for (const v of PP.VENUES) {
+        const f = document.createElement('figure');
+        f.innerHTML = '<a href="?venue=' + v.id + '&quality=' + quality + '"><img alt=""></a><figcaption><b>' + v.id + '</b> · ' + v.name + ' — ' + v.desc + '</figcaption>';
+        f.querySelector('img').src = map.get(v.id) || '';
+        grid.appendChild(f);
+      }
+      const after = { pr: renderer.getPixelRatio(), exp: renderer.toneMappingExposure, size: renderer.getSize(new THREE.Vector2()).toArray(), rt: renderer.getRenderTarget() };
+      document.getElementById('hud').textContent = map.size + ' thumbs · ' + ms.toFixed(0) + ' ms';
+      window.__thumbs = { count: map.size, ms, before, after, restored: JSON.stringify(before) === JSON.stringify(after), bytes: [...map.values()].reduce((a, u) => a + u.length, 0) };
+    });
+  }
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,265 @@
+<!doctype html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pickle Pop – Character Preview</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #e9dfd0; overflow: hidden; font-family: system-ui, sans-serif; }
+  canvas { display: block; }
+  #hud { position: fixed; left: 10px; top: 10px; padding: 8px 12px; background: rgba(255,255,255,0.85); border-radius: 10px; font-size: 13px; color: #333; white-space: pre; pointer-events: none; }
+</style>
+</head>
+<body>
+<div id="hud">loading…</div>
+<script src="https://cdn.jsdelivr.net/npm/three@0.147.0/build/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.147.0/examples/js/environments/RoomEnvironment.js"></script>
+<script src="../shared/config.js"></script>
+<script src="../js/character.js"></script>
+<script>
+(function () {
+  'use strict';
+  const qs = new URLSearchParams(location.search);
+  const TEST = qs.get('test');
+  const MANUAL = qs.has('manual') || TEST === 'contact';
+  const ONLY = qs.get('only');
+  const LOOKS = qs.get('looks');            // ?looks=random → tùy chỉnh ngẫu nhiên
+  const PREVIEW = qs.has('preview');        // ?preview → thử PP.Character.createPreview
+  const hud = document.getElementById('hud');
+  // rng có hạt giống (để ảnh chụp lặp lại được)
+  const mkRng = (seed) => { let s = seed >>> 0; return () => { s = (s * 1664525 + 1013904223) >>> 0; return s / 4294967296; }; };
+  function randomLook(r) {
+    const O = PP.Character.OPTIONS, pick = (a) => a[Math.floor(r() * a.length)];
+    return { shirt: pick(O.palette), shorts: pick(O.palette), accent: pick(O.palette), shoes: pick(O.palette), paddle: pick(O.palette),
+      pattern: pick(O.patterns).id, accessory: pick(O.accessories).id, shirtStyle: pick(O.shirtStyles).id, number: Math.floor(r() * 100) };
+  }
+  if (PREVIEW) { runPreview(); return; }
+
+  const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
+  renderer.setPixelRatio(Math.min(2, window.devicePixelRatio || 1));
+  renderer.setSize(innerWidth, innerHeight);
+  renderer.outputEncoding = THREE.sRGBEncoding;
+  renderer.toneMapping = THREE.ACESFilmicToneMapping;
+  renderer.toneMappingExposure = 0.95;
+  renderer.shadowMap.enabled = true;
+  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+  document.body.appendChild(renderer.domElement);
+
+  const scene = new THREE.Scene();
+  const lin = (h) => new THREE.Color(h).convertSRGBToLinear();   // cùng quy ước với world.js
+  scene.background = lin(0xe9dfd0);
+  const pmrem = new THREE.PMREMGenerator(renderer);
+  scene.environment = pmrem.fromScene(new THREE.RoomEnvironment(), 0.04).texture;
+  scene.add(new THREE.HemisphereLight(lin(0xfff1dc), lin(0xb88050), 0.62));
+  const sun = new THREE.DirectionalLight(lin(0xfff0d2), 2.05);
+  sun.position.set(4, 9, 6);
+  sun.castShadow = true;
+  sun.shadow.mapSize.set(2048, 2048);
+  Object.assign(sun.shadow.camera, { left: -8, right: 8, top: 6, bottom: -6, near: 1, far: 30 });
+  sun.shadow.normalBias = 0.02; sun.shadow.bias = -0.0004;
+  scene.add(sun);
+  const floor = new THREE.Mesh(new THREE.PlaneGeometry(40, 30), new THREE.MeshStandardMaterial({ color: lin(0x3b6fb6), roughness: 0.85 }));
+  floor.rotation.x = -Math.PI / 2; floor.receiveShadow = true; scene.add(floor);
+  const line = new THREE.Mesh(new THREE.PlaneGeometry(40, 0.06), new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.8 }));
+  line.rotation.x = -Math.PI / 2; line.position.set(0, 0.002, -1.2); scene.add(line);
+
+  const camera = new THREE.PerspectiveCamera(36, innerWidth / innerHeight, 0.05, 100);
+  function setCam(x, y, z, tx, ty, tz, fov) { camera.position.set(x, y, z); camera.lookAt(tx, ty, tz); if (fov) { camera.fov = fov; camera.updateProjectionMatrix(); } }
+  addEventListener('resize', () => { renderer.setSize(innerWidth, innerHeight); camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix(); });
+
+  const defs = PP.CHARACTERS.filter((d) => !ONLY || ONLY.split(',').includes(d.id));
+  const SP = 1.35, PER_ROW = 9, ROWS = Math.ceil(defs.length / PER_ROW);
+  const lookRng = mkRng(+(qs.get('seed') || 7));
+  window.__looks = {};
+  const chars = defs.map((def, i) => {
+    const team = (TEST === 'contact' && i % 2 === 1) ? 'A' : 'B';
+    const look = LOOKS === 'random' ? randomLook(lookRng) : null;
+    if (look) window.__looks[def.id] = look;
+    const ch = PP.Character.build(def, { team, look });
+    scene.add(ch.root);
+    const row = Math.floor(i / PER_ROW), col = i % PER_ROW, nInRow = Math.min(PER_ROW, defs.length - row * PER_ROW);
+    const x0 = (col - (nInRow - 1) / 2) * SP, z0 = -(row - (ROWS - 1) / 2) * 2.4;
+    return { def, ch, team, x0, z0, x: x0, z: z0, vx: 0, vz: 0, mode: 'ready', look: null, holdBall: false, cool: 0.2 * i, pending: null };
+  });
+  if (defs.length > 1) { if (ROWS > 1) setCam(0, 4.4, 9.4, 0, 0.55, -0.3, 38); else setCam(0, 2.3, 8.4, 0, 0.8, 0, 42); } else setCam(0.5, 1.15, 3.0, 0, 0.85, 0, 34);
+  if (chars[0]) chars[0].ch.setHighlight(0xffd84a);
+
+  // bóng nhìn theo
+  const ball = new THREE.Mesh(new THREE.SphereGeometry(0.065, 20, 14), new THREE.MeshStandardMaterial({ color: lin(0xe8ff4a), roughness: 0.5 }));
+  ball.castShadow = true; scene.add(ball);
+  const lookP = new THREE.Vector3();
+
+  // markers
+  const mkC = new THREE.MeshBasicMaterial({ color: 0xff2255 }), mkP = new THREE.MeshBasicMaterial({ color: 0x22dd66 });
+  const mkGeo = new THREE.SphereGeometry(0.03, 10, 8);
+  const markers = [];
+  function marker(p, m, life) { const o = new THREE.Mesh(mkGeo, m); o.position.copy(p); scene.add(o); markers.push({ o, life }); return o; }
+
+  // ---------------- demo cycle
+  const STATES = ['ready', 'idle', 'run', 'shuffle', 'split', 'forehand', 'backhand', 'overhead', 'low', 'volley', 'serve', 'lunge', 'celebrate', 'sad'];
+  let simT = 0;
+  const STATE_LEN = 2.2;
+  function demoTick(c, i, dt) {
+    const k = Math.floor((simT + i * 0.0) / STATE_LEN) % STATES.length;
+    const st = STATES[(k + (qs.has('stagger') ? i : 0)) % STATES.length];
+    const local = (simT % STATE_LEN);
+    const fresh = c._st !== st; c._st = st;
+    c.vx = 0; c.vz = 0; c.mode = 'ready'; c.holdBall = false; c.look = lookP;
+    const right = c.team === 'B' ? -1 : 1, fwd = c.team === 'B' ? 1 : -1;
+    if (st === 'idle') c.mode = 'idle';
+    if (st === 'run') { c.vz = Math.sin(local * 2.6) * 4.2; c.vx = 0.6; }
+    if (st === 'shuffle') { c.vx = Math.sin(local * 3.2) * 3.0; }
+    if (st === 'split' && (fresh || Math.abs(local - 1.1) < 0.009)) c.ch.splitStep();
+    if (['forehand', 'backhand', 'overhead', 'low', 'volley', 'serve'].includes(st)) {
+      if (st === 'serve') { c.mode = 'serve'; c.holdBall = local < 0.6; }
+      if ((fresh || Math.abs(local - 1.2) < 0.009) && (st !== 'serve' || !fresh)) {
+        const off = { forehand: [0.75, 0.95, 0.4], backhand: [-0.55, 0.9, 0.45], overhead: [0.25, 1.85, 0.35], low: [0.35, 0.25, 0.65], volley: [0.3, 1.05, 0.6], serve: [0, 0.55, 0.45] }[st];
+        const ctc = { x: c.x + right * off[0], y: off[1], z: c.z + fwd * off[2] };
+        c.ch.swing({ zone: st, contact: ctc, timeToContact: st === 'serve' ? 0.32 : 0.3 });
+        c._lastC = ctc;
+      }
+      if (st === 'serve' && fresh) { c.holdBall = true; }
+    }
+    if (st === 'lunge' && (fresh || Math.abs(local - 1.2) < 0.009)) c.ch.lunge(right, fwd * 0.4);
+    if (st === 'celebrate') c.mode = 'celebrate';
+    if (st === 'sad') c.mode = 'sad';
+    c.x = c.x0; c.z = c.z0;
+  }
+
+  // ---------------- contact test
+  const rng = (() => { let s = 12345; return () => { s = (s * 1664525 + 1013904223) >>> 0; return s / 4294967296; }; })();
+  const R = (a, b) => a + (b - a) * rng();
+  const ZONES = ['forehand', 'backhand', 'overhead', 'low', 'volley', 'serve'];
+  window.__contactErrors = [];
+  window.__contactLog = [];
+  const testN = +(qs.get('n') || 360);
+  let testCount = 0;
+  const EXT = qs.has('ext');   // vùng rộng như predictContact (tầm ngang tới ~1.55 m)
+  function zoneContact(zone) { // [lateral to right, y, forward]
+    if (EXT && zone !== 'serve') {
+      const a = R(-Math.PI * 0.5, Math.PI * 0.5), r = R(0.3, 1.5);
+      const lat = Math.sin(a) * r, fw = Math.cos(a) * r * 0.8;
+      const y = zone === 'overhead' ? R(1.6, 2.3) : zone === 'low' ? R(0.1, 0.5) : R(0.5, 1.6);
+      if (zone === 'forehand') return [Math.abs(lat), y, fw];
+      if (zone === 'backhand') return [-Math.abs(lat), y, fw];
+      return [lat, y, fw];
+    }
+    switch (zone) {
+      case 'forehand': return [R(0.3, 1.25), R(0.45, 1.45), R(-0.15, 0.65)];
+      case 'backhand': return [-R(0.2, 1.05), R(0.45, 1.45), R(-0.05, 0.65)];
+      case 'overhead': return [R(-0.5, 0.6), R(1.6, 2.15), R(-0.25, 0.55)];
+      case 'low': return [R(-0.9, 0.9), R(0.12, 0.5), R(0.15, 0.85)];
+      case 'volley': return [R(-0.8, 0.9), R(0.6, 1.5), R(0.15, 0.75)];
+      default: return [R(-0.08, 0.08), R(0.5, 0.6), R(0.4, 0.5)];
+    }
+  }
+  function testTick(c, i, dt) {
+    c.look = lookP; c.mode = c.serving ? 'serve' : 'ready';
+    if (!c.pending && (c.cool -= dt) <= 0 && testCount < testN) {
+      const zone = ZONES[(testCount + i) % ZONES.length];
+      testCount++;
+      const right = c.team === 'B' ? -1 : 1, fwd = c.team === 'B' ? 1 : -1;
+      const o = zoneContact(zone);
+      const moving = zone !== 'serve' && rng() < 0.5;
+      c.vx = moving ? -Math.sign(c.x - c.x0 || 1) * R(0, 3) : 0; c.vz = moving ? -Math.sign(c.z - c.z0 || 1) * R(0, 2) : 0;
+      const Tt = zone === 'serve' ? R(0.25, 0.4) : R(0.06, 0.6);
+      // vị trí người chơi lúc chạm (đang di chuyển) → contact theo vị trí đó
+      const px = c.x + c.vx * Tt, pz = c.z + c.vz * Tt;
+      const C = new THREE.Vector3(px + right * o[0], o[1], pz + fwd * o[2]);
+      c.serving = zone === 'serve';
+      c.ch.swing({ zone, contact: { x: C.x, y: C.y, z: C.z }, timeToContact: Tt });
+      c.pending = { zone, C, tc: simT + Tt, T: Tt, moving };
+      marker(C, mkC, 1.2);
+    }
+  }
+  function testAfterUpdate(c) {
+    if (c.pending && simT >= c.pending.tc - 1e-9) {
+      const p = c.ch.getPaddleFaceWorld(new THREE.Vector3());
+      const e = p.distanceTo(c.pending.C);
+      window.__contactErrors.push(e);
+      window.__contactLog.push({ id: c.def.id, team: c.team, zone: c.pending.zone, T: +c.pending.T.toFixed(3), err: +e.toFixed(4), moving: c.pending.moving, late: +(simT - c.pending.tc).toFixed(4) });
+      marker(p, mkP, 1.2);
+      c.pending = null; c.cool = R(0.35, 0.7); c.vx = 0; c.vz = 0; c.serving = false;
+    }
+  }
+
+  // ---------------- main loop
+  function step(dt) {
+    simT += dt;
+    lookP.set(Math.sin(simT * 0.9) * 3, 1.0 + Math.abs(Math.sin(simT * 2.1)) * 1.0, 3 + Math.cos(simT * 0.7) * 1.5);
+    ball.position.copy(lookP);
+    chars.forEach((c, i) => {
+      if (TEST === 'contact') testTick(c, i, dt); else if (!c.manual) demoTick(c, i, dt);
+      c.x += c.vx * dt; c.z += c.vz * dt;
+      if (TEST === 'contact' && !c.pending) { // giữ trong khu vực
+        if (Math.abs(c.x - c.x0) > 0.6) c.vx = -Math.sign(c.x - c.x0) * Math.abs(c.vx);
+        if (Math.abs(c.z - c.z0) > 0.6) c.vz = -Math.sign(c.z - c.z0) * Math.abs(c.vz);
+      }
+      c.ch.update(dt, { x: c.x, z: c.z, vx: c.vx, vz: c.vz, look: c.look, mode: c.mode, holdBall: c.holdBall });
+      if (TEST === 'contact') testAfterUpdate(c);
+    });
+    for (let i = markers.length - 1; i >= 0; i--) { if ((markers[i].life -= dt) <= 0) { scene.remove(markers[i].o); markers.splice(i, 1); } }
+  }
+  function render() { renderer.render(scene, camera); }
+  function stats() {
+    const e = window.__contactErrors.slice().sort((a, b) => a - b);
+    if (!e.length) return null;
+    const ok = e.filter((x) => x <= 0.12).length;
+    return { n: e.length, within: ok / e.length, mean: e.reduce((a, b) => a + b, 0) / e.length, median: e[e.length >> 1], p95: e[Math.floor(e.length * 0.95)], max: e[e.length - 1] };
+  }
+  window.PV = { chars, step, render, setCam, stats, scene, camera, get t() { return simT; } };
+
+  let last = performance.now();
+  function loop(now) {
+    const dt = Math.min(0.05, (now - last) / 1000); last = now;
+    step(dt); render();
+    hud.textContent = 'state: ' + (chars[0] ? chars[0]._st : '') + '\n' + (TEST ? JSON.stringify(stats()) : '');
+    requestAnimationFrame(loop);
+  }
+  if (TEST === 'contact') {
+    // chạy toàn bộ bài test với dt cố định 1/60 (và một phần với dt 1/30)
+    let frames = 0;
+    while (testCount < testN || chars.some((c) => c.pending)) { step(frames % 3 === 2 ? 1 / 30 : 1 / 60); frames++; if (frames > 200000) break; }
+    window.__contactDone = true;
+    render();
+    hud.textContent = 'contact test\n' + JSON.stringify(stats(), null, 1);
+  } else if (!MANUAL) requestAnimationFrame(loop);
+  else { step(0.016); render(); hud.textContent = 'manual'; }
+  window.__ready = true;
+
+  // ---------------- ?preview: thử createPreview (Tủ đồ)
+  function runPreview() {
+    document.body.style.overflow = 'auto';
+    const wrap = document.createElement('div');
+    wrap.style.cssText = 'display:grid;grid-template-columns:repeat(4,1fr);gap:10px;padding:48px 10px 10px;';
+    document.body.appendChild(wrap);
+    const ANIMS = ['idle', 'ready', 'swing', 'celebrate'];
+    const r = mkRng(+(qs.get('seed') || 3));
+    const ids = (qs.get('ids') || 'lion,capybara,elephant,sloth,seal,raccoon,deer,monkey').split(',');
+    const pvs = [];
+    ids.forEach((id, i) => {
+      const cell = document.createElement('div');
+      cell.style.cssText = 'position:relative;height:300px;border-radius:14px;background:linear-gradient(#fff7ec,#f1e2cc);';
+      const cv = document.createElement('canvas'); cv.style.cssText = 'width:100%;height:100%;display:block;';
+      const lab = document.createElement('div'); lab.style.cssText = 'position:absolute;left:8px;top:6px;font-size:12px;color:#555';
+      cell.appendChild(cv); cell.appendChild(lab); wrap.appendChild(cell);
+      const pv = PP.Character.createPreview(cv);
+      const def = PP.CHARACTERS.find((d) => d.id === id) || PP.CHARACTERS[i];
+      const look = i % 2 ? randomLook(r) : null;
+      pv.set(def, look);
+      pv.setAnim(ANIMS[i % ANIMS.length]);
+      lab.textContent = def.id + ' · ' + ANIMS[i % ANIMS.length] + (look ? ' · ' + look.accessory + '/' + look.shirtStyle + '/' + look.pattern : ' · default');
+      pvs.push({ pv, cv, def });
+    });
+    // thử tạo/hủy lặp lại (rò rỉ, lỗi)
+    const tmp = document.createElement('canvas'); tmp.style.cssText = 'width:200px;height:200px'; document.body.appendChild(tmp);
+    for (let k = 0; k < 3; k++) { const t = PP.Character.createPreview(tmp); t.set(PP.CHARACTERS[k], null); t.setAnim('swing'); t.dispose(); }
+    tmp.remove();
+    window.__previews = pvs;
+    hud.textContent = 'createPreview × ' + pvs.length + ' (kéo để xoay)';
+    window.__ready = true;
+  }
+})();
+</script>
+</body>
+</html>
