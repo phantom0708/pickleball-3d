@@ -328,7 +328,9 @@ test('online 2v2: 2 người + 2 bot của server', { timeout: 170000 }, async (
     const botIds = ms.players.filter((p) => p.isBot).map((p) => p.id);
     const sw = a.msgs.filter((m) => m.t === 'swing');
     assert.ok(sw.some((m) => botIds.includes(m.id) && m.zone !== 'serve'), 'bot phát swing khi có intent');
-    assert.ok(sw.some((m) => botIds.includes(m.id) && m.zone === 'serve'), 'bot phát swing giao bóng');
+    // chỉ kiểm tra khi trận thực sự có lượt bot giao (đội người có thể thắng liền nhiều điểm và giữ giao suốt)
+    const botServed = a.msgs.some((m) => m.t === 'serve_setup' && botIds.includes(m.server));
+    if (botServed) assert.ok(sw.some((m) => botIds.includes(m.id) && m.zone === 'serve'), 'bot phát swing giao bóng');
     assert.ok(sw.some((m) => m.id === b.pid), 'swing của b được chuyển cho a');
     assert.ok(!sw.some((m) => m.id === a.pid), 'không gửi lại swing cho chính người gửi');
     for (const m of sw) assert.ok(m.matchId === ms.matchId && Number.isFinite(m.contactT) && typeof m.zone === 'string');
